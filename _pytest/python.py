@@ -1313,6 +1313,22 @@ def raises(expected_exception, *args, **kwargs):
             return _pytest._code.ExceptionInfo()
     pytest.fail("DID NOT RAISE {0}".format(expected_exception))
 
+
+def logs(logger=None, level=None):
+    """Fail unless a log message of level *level* or higher is emitted
+    on *logger_name* or its children.  If omitted, *level* defaults to
+    INFO and *logger* defaults to the root logger.
+
+    Example::
+        with pytest.logs('foo', level='INFO') as cm:
+            logging.getLogger('foo').info('first message')
+            logging.getLogger('foo.bar').error('second message')
+        assert cm.output == ['INFO:foo:first message',
+                             'ERROR:foo.bar:second message']
+    """
+    return LogsContext(logger, level)
+
+
 class RaisesContext(object):
     def __init__(self, expected_exception):
         self.expected_exception = expected_exception
@@ -1335,6 +1351,53 @@ class RaisesContext(object):
                 tp = exc_type, exc_type(value), traceback
         self.excinfo.__init__(tp)
         return issubclass(self.excinfo.type, self.expected_exception)
+
+
+class LogsContext(_BaseTestCaseContext):
+    """A context manager used to implement logs().
+
+    This is back-ported from stdlib python.unittest.case._AssertLogsContext
+    See: https://hg.python.org/cpython/rev/4f5815747f58
+    """
+
+    LOGGING_FORMAT = "%(levelname)s:%(name)s:%(message)s"
+
+    def __init__(self, logger_name, level):
+        self.logger_name = logger_name
+        if level:
+            self.level = logging._nameToLevel.get(level, level)
+        else:
+            self.level = logging.INFO
+        self.msg = None
+
+    def __enter__(self):
+        if isinstance(self.logger_name, logging.Logger):
+            logger = self.logger = self.logger_name
+        else:
+            logger = self.logger = logging.getLogger(self.logger_name)
+        formatter = logging.Formatter(self.LOGGING_FORMAT)
+        handler = _CapturingHandler()
+        handler.setFormatter(formatter)
+        self.watcher = handler.watcher
+        self.old_handlers = logger.handlers[:]
+        self.old_level = logger.level
+        self.old_propagate = logger.propagate
+        logger.handlers = [handler]
+        logger.setLevel(self.level)
+        logger.propagate = False
+        return handler.watcher
+
+    def __exit__(self, exc_type, exc_value, tb):
+        self.logger.handlers = self.old_handlers
+        self.logger.propagate = self.old_propagate
+        self.logger.setLevel(self.old_level)
+        if exc_type is not None:
+            # let unexpected exceptions pass through
+            return False
+        if len(self.watcher.records) == 0:
+            pytest.fail(
+                "no logs of level {} or higher triggered on {}"
+                .format(logging.getLevelName(self.level), self.logger.name))
 
 #
 #  the basic pytest Function item
